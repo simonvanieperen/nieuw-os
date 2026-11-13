@@ -9,7 +9,8 @@
 //! concurrent intent fails without mutation. An `Unknown` storage outcome
 //! makes the catalog indeterminate; it then fails closed for both mutation
 //! and lookup until `reconcile` installs state from an authoritative source.
-//! No such authoritative persistent source exists yet.
+//! `journal` is a host-tested durable model of that source; no native storage
+//! adapter exists yet.
 
 use crate::store::{ArtifactDescriptor, ArtifactRef};
 use crate::PackageIdentity;
@@ -115,6 +116,15 @@ impl<const N: usize> InstallCatalog<N> {
 
     pub const fn service_epoch(&self) -> u64 {
         self.service_epoch
+    }
+
+    /// Generation and committed entries for a durable snapshot. Fails closed
+    /// while the catalog is indeterminate.
+    pub fn snapshot(
+        &self,
+    ) -> Result<(u64, impl Iterator<Item = &CatalogEntry> + Clone), CatalogError> {
+        self.check_consistent()?;
+        Ok((self.generation, self.entries.iter().flatten()))
     }
 
     pub fn lookup(

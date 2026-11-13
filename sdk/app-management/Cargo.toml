@@ -10,3 +10,4 @@ publish = false
 app-package-core = { path = "../../crates/app-package-core" }
 artifact-store-core = { path = "../../crates/artifact-store-core" }
 nieuw-os-sdk-runtime = { path = "../runtime" }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }

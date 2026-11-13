@@ -243,6 +243,7 @@ dependencies = [
  "app-package-core",
  "artifact-store-core",
  "nieuw-os-sdk-runtime",
+ "sha2 0.10.9",
 ]
 
 [[package]]

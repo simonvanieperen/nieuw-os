@@ -12,6 +12,7 @@
 extern crate std;
 
 pub mod catalog;
+pub mod journal;
 pub mod protocol;
 pub mod store;
 

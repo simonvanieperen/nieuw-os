@@ -167,6 +167,27 @@ a snapshot with a higher generation. That authoritative durable source does
 not yet exist; this model therefore demonstrates neither persistence nor cold
 recovery. `N` is a compile-time model bound, not a product limit.
 
+#### Durable catalogue journal (host model, TASK-A02-J)
+
+`sdk/app-management/src/journal.rs` adds a two-slot A/B journal over a
+`JournalMedia` trait (read, write, flush). A commit writes only the inactive
+slot, hashes header and entries with SHA-256 (torn-write and bit-rot detection,
+not authentication) and flushes before the slot counts. `recover_into` picks the
+valid slot with the highest generation and restores it only through
+`InstallCatalog::reconcile`, so epoch, forward-only generation, duplicate and
+artifact-binding checks are not duplicated or weakened. A media read error,
+two valid slots with equal generation, or no valid slot fail closed
+(`Media`, `Corrupt`); a failed write leaves the journal `Unknown` until the next
+successful recovery. `released` artifacts may only be cleaned up after
+`commit` returned `Ok`.
+
+Host tests inject torn writes at every byte, flush and read failures, every
+single-byte corruption of the newest slot, bad headers, ambiguous slots, stale
+and indeterminate commits, and a forged digest-valid slot with duplicate app
+ids. Not provided: a native storage adapter, power-cut or cold-boot trial,
+protection against replacing the whole medium with an older valid copy (needs
+a platform monotonic counter), or any change to A02 acceptance.
+
 #### Targeted execution TASK-A02-CATALOG — 30 October 2026
 
 Code source `05e658e58eb69d29a2a800660616308c4cecf2e3`, branch
