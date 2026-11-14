@@ -11,6 +11,7 @@ Invariants (ADR-CI-SECURITY-ALERTS-20261111, SECURITY.md):
 These tests use local fakes and do not contact GitHub.
 """
 
+import http.client
 import io
 import json
 import os
@@ -154,6 +155,27 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(rows[0][6], summary.ABSENT)
         self.assertEqual(rows[0][8], summary.ABSENT)
 
+    def test_malformed_nested_fields_fail_closed(self):
+        dependabot = [
+            dependabot_alert(dependency="SECRET-PATH/kernel.rs"),
+            dependabot_alert(dependency={"package": ["rust", "hkdf"]}),
+            dependabot_alert(security_advisory="GHSA text"),
+            dependabot_alert(security_vulnerability=7),
+            dependabot_alert(security_vulnerability={"first_patched_version": "0.12.5"}),
+        ]
+        for alert in dependabot:
+            with self.subTest(alert=alert), \
+                    self.assertRaisesRegex(summary.FetchError, "Dependabot alert shape"):
+                summary.dependabot_rows([alert])
+        broken_tool = code_scanning_alert()
+        broken_tool["tool"] = "CodeQL"
+        broken_rule = code_scanning_alert()
+        broken_rule["rule"] = "rust/secret-rule"
+        for alert in (broken_tool, broken_rule):
+            with self.subTest(alert=alert), \
+                    self.assertRaisesRegex(summary.FetchError, "code-scanning alert shape"):
+                summary.code_scanning_counts([alert])
+
     def test_unread_source_is_never_rendered_as_zero(self):
         text = summary.render("BaryonOS/BaryonOS", summary.FetchError("HTTP 403"), [])
         self.assertIn("### Dependabot: not read", text)
@@ -198,6 +220,27 @@ class FetchTests(unittest.TestCase):
         with self.assertRaises(summary.FetchError) as caught:
             summary.fetch_all(API + "code-scanning/alerts", "token-value", opener)
         self.assertEqual(str(caught.exception), "HTTP 403")
+
+    def test_next_link_accepts_every_rfc_8288_form_of_rel_next(self):
+        url = f"{API}x?page=2"
+        for header in (f'<{url}>; rel=next', f'<{url}>; REL="Next"',
+                       f'<{url}>; rel="prev next"', f'<{API}x?page=1>; rel="prev", <{url}>;rel=next'):
+            with self.subTest(header=header):
+                self.assertEqual(summary.next_link(header), url)
+        for header in (f'<{url}>; rel="nextish"', f'<{url}>; rel=prev', f'<{url}>; title="next"'):
+            with self.subTest(header=header):
+                self.assertIsNone(summary.next_link(header))
+        opener = FakeOpener([FakeResponse([1], link=f"<{url}>; rel=next"), FakeResponse([2])])
+        self.assertEqual(summary.fetch_all(API + "x", "t", opener), [1, 2])
+
+    def test_transport_errors_while_reading_the_body_fail_closed(self):
+        class TruncatedResponse(FakeResponse):
+            def read(self, *args):
+                raise http.client.IncompleteRead(b"[", 99)
+
+        with self.assertRaises(summary.FetchError) as caught:
+            summary.fetch_all(API + "x", "t", FakeOpener([TruncatedResponse([1])]))
+        self.assertEqual(str(caught.exception), "IncompleteRead")
 
     def test_non_list_payload_and_page_overflow_fail_closed(self):
         with self.assertRaisesRegex(summary.FetchError, "shape"):
@@ -247,6 +290,17 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("unexpected", err)
+
+    def test_malformed_nested_field_fails_without_traceback_or_partial_output(self):
+        def fetch(url, token):
+            return [dependabot_alert(dependency="SECRET-PATH/kernel.rs")] \
+                if "dependabot" in url else [code_scanning_alert()]
+
+        code, out, err = self.run_main(fetch)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("unexpected Dependabot alert shape", err)
+        self.assertNotIn("SECRET-PATH", err)
 
     def test_missing_token_or_bad_repository_is_a_usage_error(self):
         with patch.dict(os.environ, {}, clear=True), \

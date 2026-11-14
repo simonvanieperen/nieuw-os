@@ -20,6 +20,7 @@ fail instead of being reported as zero alerts.
 """
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -86,6 +87,25 @@ def severity(value):
     return "unknown"
 
 
+def nested(container, key, source):
+    """A nested alert object: absent is empty, any other non-object is malformed."""
+    value = container.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise FetchError(f"unexpected {source} alert shape")
+    return value
+
+
+def is_next(parameters):
+    """True if the first rel parameter lists "next" (RFC 8288: token or quoted, any case)."""
+    for parameter in parameters:
+        name, separator, value = parameter.partition("=")
+        if separator and name.strip().lower() == "rel":
+            return "next" in value.strip().strip('"').lower().split()
+    return False
+
+
 def next_link(header):
     """Return the rel="next" URL of a Link header, restricted to the API root."""
     if not header:
@@ -93,7 +113,7 @@ def next_link(header):
     for part in header.split(","):
         section = [piece.strip() for piece in part.split(";")]
         target = section[0]
-        if 'rel="next"' not in section[1:]:
+        if not is_next(section[1:]):
             continue
         if not (target.startswith("<") and target.endswith(">")):
             raise FetchError("malformed pagination link")
@@ -122,7 +142,7 @@ def fetch_all(url, token, opener=None):
                 link = response.headers.get("Link")
         except error.HTTPError as exc:
             raise FetchError(f"HTTP {exc.code}") from None
-        except (error.URLError, OSError, ValueError) as exc:
+        except (error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
             raise FetchError(type(exc).__name__) from None
         if not isinstance(page, list):
             raise FetchError("unexpected response shape")
@@ -139,11 +159,11 @@ def dependabot_rows(alerts):
     for alert in alerts:
         if not isinstance(alert, dict):
             raise FetchError("unexpected Dependabot alert shape")
-        dependency = alert.get("dependency") or {}
-        package = dependency.get("package") or {}
-        advisory = alert.get("security_advisory") or {}
-        vulnerability = alert.get("security_vulnerability") or {}
-        patched = (vulnerability.get("first_patched_version") or {}).get("identifier")
+        dependency = nested(alert, "dependency", "Dependabot")
+        package = nested(dependency, "package", "Dependabot")
+        advisory = nested(alert, "security_advisory", "Dependabot")
+        vulnerability = nested(alert, "security_vulnerability", "Dependabot")
+        patched = nested(vulnerability, "first_patched_version", "Dependabot").get("identifier")
         number = alert.get("number")
         rows.append((
             str(number) if isinstance(number, int) and number > 0 else PLACEHOLDER,
@@ -166,8 +186,8 @@ def code_scanning_counts(alerts):
     for alert in alerts:
         if not isinstance(alert, dict):
             raise FetchError("unexpected code-scanning alert shape")
-        tool = clean("tool", (alert.get("tool") or {}).get("name"))
-        rule = alert.get("rule") or {}
+        tool = clean("tool", nested(alert, "tool", "code-scanning").get("name"))
+        rule = nested(alert, "rule", "code-scanning")
         level = rule.get("security_severity_level")
         if isinstance(level, str) and level.lower() in SEVERITIES:
             label = level.lower()
