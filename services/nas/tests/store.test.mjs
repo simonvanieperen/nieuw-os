@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { execFileSync, fork } from 'node:child_process';
 import { once } from 'node:events';
@@ -210,6 +211,42 @@ test('a FIFO in place of the snapshot is rejected without blocking', (t) => {
   const holder = fixture(t); const directory = holder.store.directory; holder.store.close();
   const state = path.join(directory, 'state.json'); fs.unlinkSync(state);
   try { execFileSync('mkfifo', [state]); } catch { t.skip('mkfifo unavailable'); return; }
+  assert.throws(() => NasStore.openSynthetic({ directory }), { code: 'INVALID_STORE' });
+});
+
+test('a socket in place of the store marker is rejected as an invalid store', async (t) => {
+  const holder = fixture(t); const directory = holder.store.directory; holder.store.close();
+  const marker = path.join(directory, 'synthetic.json'); fs.unlinkSync(marker);
+  const server = net.createServer();
+  try { server.listen(marker); await once(server, 'listening'); } catch { t.skip('UNIX sockets unavailable'); return; }
+  t.after(() => server.close());
+  assert.throws(() => NasStore.openSynthetic({ directory }), { code: 'INVALID_STORE' });
+});
+
+test('a marker swapped for a symlink just before open is rejected', (t) => {
+  const holder = fixture(t); const directory = holder.store.directory; holder.store.close();
+  const marker = path.join(directory, 'synthetic.json'); const copy = path.join(directory, 'marker-copy.json');
+  fs.copyFileSync(marker, copy);
+  // Win the race deterministically: swap the checked file for a symlink at the moment it is opened.
+  const openSync = fs.openSync;
+  t.mock.method(fs, 'openSync', function (file, ...rest) {
+    if (file === marker && !fs.lstatSync(marker).isSymbolicLink()) { fs.unlinkSync(marker); fs.symlinkSync(copy, marker); }
+    return openSync.call(this, file, ...rest);
+  });
+  assert.throws(() => NasStore.openSynthetic({ directory }), { code: 'INVALID_STORE' });
+});
+
+test('a snapshot that grows after its size check is rejected', (t) => {
+  const holder = fixture(t); const directory = holder.store.directory; holder.store.close();
+  const state = path.join(directory, 'state.json'); let stateFd = -1;
+  const openSync = fs.openSync; const fstatSync = fs.fstatSync;
+  t.mock.method(fs, 'openSync', function (file, ...rest) {
+    const fd = openSync.call(this, file, ...rest); if (file === state) stateFd = fd; return fd;
+  });
+  // Trailing whitespace keeps the JSON valid, so only the size check can reject it.
+  t.mock.method(fs, 'fstatSync', function (fd, ...rest) {
+    const stat = fstatSync.call(this, fd, ...rest); if (fd === stateFd) fs.appendFileSync(state, ' '); return stat;
+  });
   assert.throws(() => NasStore.openSynthetic({ directory }), { code: 'INVALID_STORE' });
 });
 

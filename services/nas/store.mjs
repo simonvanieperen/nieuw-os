@@ -25,11 +25,12 @@ const usedBytes = (ns) => Object.values(ns.objects).reduce((sum, record) => sum 
 // Validate the opened descriptor, not the path: a path check followed by a reopen
 // lets a concurrent rename swap in a symlink or larger file between the two calls.
 // O_NOFOLLOW rejects a symlink at open; O_NONBLOCK keeps a FIFO from blocking open.
+// ELOOP is a symlink and ENXIO a socket or unbacked device: both are not store files.
 const READ_FLAGS = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 function readSmall(file, maximum) {
   let fd;
   try { fd = fs.openSync(file, READ_FLAGS); }
-  catch (error) { if (error.code === 'ELOOP') fail('INVALID_STORE'); throw error; }
+  catch (error) { if (error.code === 'ELOOP' || error.code === 'ENXIO') fail('INVALID_STORE'); throw error; }
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || stat.size > maximum) fail('INVALID_STORE');
